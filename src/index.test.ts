@@ -847,6 +847,30 @@ describe('Test cron validation', () => {
     ).toBeFalsy()
   })
 
+  it('Test # occurrence bounds', () => {
+    expect(cron('0 0 ? * SUN#1 *', { preset: 'aws-cloud-watch' }).isValid()).toBeTruthy()
+    expect(cron('0 0 ? * SUN#5 *', { preset: 'aws-cloud-watch' }).isValid()).toBeTruthy()
+    expect(cron('0 0 ? * SUN#6 *', { preset: 'aws-cloud-watch' }).isValid()).toBeFalsy()
+    expect(cron('0 0 ? * SUN#0 *', { preset: 'aws-cloud-watch' }).isValid()).toBeFalsy()
+    expect(cron('0 0 ? * SUN#0.5 *', { preset: 'aws-cloud-watch' }).isValid()).toBeFalsy()
+  })
+
+  it('Test default preset month and day-of-month lower bounds', () => {
+    expect(cron('0 0 31 * *').isValid()).toBeTruthy()
+    expect(cron('0 0 1 12 *').isValid()).toBeTruthy()
+    expect(cron('0 0 0 * *').isValid()).toBeFalsy()
+    expect(cron('0 0 1 0 *').isValid()).toBeFalsy()
+    expect(cron('0 0 32 * *').isValid()).toBeFalsy()
+    expect(cron('0 0 1 13 *').isValid()).toBeFalsy()
+  })
+
+  it('Test whitespace between cron fields', () => {
+    expect(cron('0 0 * * *').isValid()).toBeTruthy()
+    expect(cron('0  0 * * *').isValid()).toBeTruthy()
+    expect(cron('0\t0 * * *').isValid()).toBeTruthy()
+    expect(cron('  0 0 * * *  ').isValid()).toBeTruthy()
+  })
+
   it('Test allowStepping option', () => {
     expect(
       cron('5-7 2-4/2 1,2-4,5-8,10-20/3,20-30/4 * *').isValid(),
@@ -858,6 +882,79 @@ describe('Test cron validation', () => {
       cron('5-7 2-4/2 1,2-4,5-8,10-20/3,20-30/4 * *', { override: { allowStepping: false } }).isValid(),
     ).toBeFalsy()
 
-    expect(cron('5-7,8-9,10-20,21-23 * * * *', { override: { allowStepping: false } }).isValid()).toBeFalsy()
+    // Lists and ranges contain no step, so they stay valid when stepping is disabled.
+    expect(
+      cron('5-7,8-9,10-20,21-23 * * * *', { override: { allowStepping: false } }).isValid(),
+    ).toBeTruthy()
+
+    // A step in any field is still rejected.
+    expect(
+      cron('5-7,8-9,10-20/2,21-23 * * * *', { override: { allowStepping: false } }).isValid(),
+    ).toBeFalsy()
+  })
+
+  it('Test mustHaveBlankDayField reports a single error', () => {
+    const result = cron('0 0 1 * SUN *', { preset: 'aws-cloud-watch' })
+    expect(result.isError()).toBeTruthy()
+
+    const errors = result.getError()
+    expect(
+      errors.filter((error) => error.includes('mustHaveBlankDayField')),
+    ).toHaveLength(1)
+    expect(errors.length).toBe(new Set(errors).size)
+  })
+
+  it('Test an override merges with the preset field limits', () => {
+    // A lowerLimit-only override must keep the preset upperLimit.
+    expect(
+      cron('0 0 1 13 *', { override: { months: { lowerLimit: 6 } } }).isValid(),
+    ).toBeFalsy()
+    expect(
+      cron('0 0 1 12 *', { override: { months: { lowerLimit: 6 } } }).isValid(),
+    ).toBeTruthy()
+
+    // An upperLimit-only override must keep the preset lowerLimit (years are
+    // 1970-2099 in the aws-cloud-watch preset).
+    expect(
+      cron('0 0 1 * ? 1969', {
+        preset: 'aws-cloud-watch',
+        override: { years: { upperLimit: 2020 } },
+      }).isValid(),
+    ).toBeFalsy()
+    expect(
+      cron('0 0 1 * ? 2000', {
+        preset: 'aws-cloud-watch',
+        override: { years: { upperLimit: 2020 } },
+      }).isValid(),
+    ).toBeTruthy()
+  })
+
+  it('Test malformed options still return a usable error', () => {
+    const result = cron('0 0 * * *', { preset: 42 as unknown as string })
+    expect(result.isError()).toBeTruthy()
+
+    const errors = result.getError()
+    expect(Array.isArray(errors)).toBeTruthy()
+    expect(errors.length).toBeGreaterThan(0)
+  })
+
+  it('Test custom presets that share a presetId stay independent', () => {
+    const base = getOptionPreset('default').getValue()
+    const narrow = {
+      ...base,
+      presetId: 'sharedPresetId',
+      months: { minValue: 1, maxValue: 6 },
+    }
+    const wide = {
+      ...base,
+      presetId: 'sharedPresetId',
+      months: { minValue: 1, maxValue: 12 },
+    }
+
+    // The first call fills the options cache for this presetId.
+    expect(cron('0 0 1 6 *', { preset: narrow }).isValid()).toBeTruthy()
+    expect(cron('0 0 1 7 *', { preset: narrow }).isValid()).toBeFalsy()
+    // Same id, different bounds: the cached preset must not be reused.
+    expect(cron('0 0 1 12 *', { preset: wide }).isValid()).toBeTruthy()
   })
 })
